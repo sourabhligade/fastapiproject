@@ -1,0 +1,13 @@
+pydantic>=2.0.0
+fastapi>=0.100.0
+python-multipart
+transformers
+torch
+langchain
+langchain-community
+sentence-transformers
+faiss-cpu
+uvicorn
+python-magic
+pypdf
+nltk

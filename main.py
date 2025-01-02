@@ -3,181 +3,204 @@ from pydantic import BaseModel
 import uuid
 import os
 import logging
-from typing import Dict
+from typing import Dict, List
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from transformers import pipeline
 import nltk
-from haystack.document_stores import InMemoryDocumentStore
-from haystack.nodes import FARMReader, PreProcessor, BM25Retriever
-from haystack.pipelines import ExtractiveQAPipeline
+from tqdm import tqdm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ensure NLTK downloads
-nltk.download("punkt")
+app = FastAPI(title="CPU-Optimized Document QA System")
 
-app = FastAPI(title="Document QA System")
+# Using lighter, CPU-friendly models
+## EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # Lightweight, fast embedding model
+EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"  # One of the best performing embedding models
+QA_MODEL = "deepset/minilm-uncased-squad2"  # Lightweight QA model
 
-# Initialize Haystack components
-document_store = InMemoryDocumentStore(use_bm25=True)
-reader = FARMReader(model_name_or_path="deepset/roberta-large-squad2", use_gpu=True)  # Use a more advanced model
-retriever = BM25Retriever(document_store)
-preprocessor = PreProcessor(
-    clean_empty_lines=True,
-    clean_whitespace=True,
-    clean_header_footer=False,
-    split_by="word",
-    split_length=200,
-    split_overlap=50
+# Initialize components with CPU optimization
+embeddings = HuggingFaceEmbeddings(
+    model_name=EMBEDDING_MODEL,
+    model_kwargs={'device': 'cpu'},
+    encode_kwargs={'normalize_embeddings': True}
 )
-qa_pipeline = ExtractiveQAPipeline(retriever, reader)
 
-# In-memory storage for documents
+# Initialize QA pipeline with CPU settings
+qa_pipeline = pipeline('question-answering', 
+                      model=QA_MODEL, 
+                      device=-1)  # -1 means CPU
+
+# Optimize chunk size for CPU processing
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,  # Increased chunk size
+    chunk_overlap=50,
+    length_function=len,
+    separators=["\n\n", "\n", ". ", ", ", " ", ""],  # More granular separators
+    is_separator_regex=False
+)
+
+# In-memory storage
 documents: Dict[str, Dict] = {}
-
-# Create uploads directory
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+vector_stores: Dict[str, FAISS] = {}
 
 class QuestionRequest(BaseModel):
     question: str
+    k: int = 3  # Number of relevant chunks to consider
 
-class FeedbackRequest(BaseModel):
-    asset_id: str
-    question: str
-    feedback: str
+class SearchResponse(BaseModel):
+    answer: str
+    relevant_chunks: List[str]
+    confidence: float
+def clean_text(text: str) -> str:
+    """Clean and normalize text."""
+    # Replace multiple spaces with single space
+    text = ' '.join(text.split())
+    # Add space after periods if missing
+    text = text.replace(".",". ")
+    # Add space after commas if missing
+    text = text.replace(",",", ")
+    # Remove any non-breaking space characters
+    text = text.replace("\xa0", " ")
+    return text
+
+def process_document(text: str, asset_id: str) -> FAISS:
+    """Process document text into embeddings and store in FAISS."""
+    try:
+        # Clean the text first
+        cleaned_text = clean_text(text)
+        
+        # Split text into chunks
+        chunks = text_splitter.split_text(cleaned_text)
+        
+        # Clean each chunk
+        chunks = [clean_text(chunk) for chunk in chunks]
+        
+        # Remove empty chunks and very short chunks
+        chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50]
+        
+        # Process chunks in batches
+        batch_size = 50
+        all_chunks = []
+        
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            all_chunks.extend(batch)
+            logger.info(f"Processed batch {i//batch_size + 1}/{(len(chunks)-1)//batch_size + 1}")
+        
+        # Create and store FAISS index
+        vector_store = FAISS.from_texts(
+            all_chunks,
+            embeddings,
+            metadatas=[{"chunk_id": i, "asset_id": asset_id} for i in range(len(all_chunks))]
+        )
+        
+        return vector_store
+    
+    except Exception as e:
+        logger.error(f"Error in document processing: {str(e)}")
+        raise
 
 def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text content from a PDF file using pdfplumber."""
+    """Extract text content from a PDF file with proper spacing."""
     try:
-        import pdfplumber
+        from pypdf import PdfReader
+        
         text = []
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                text.append(page.extract_text())
+        reader = PdfReader(file_path)
+        
+        for page in reader.pages:
+            # Extract text and clean up spacing
+            page_text = page.extract_text()
+            # Clean up excessive spaces while preserving legitimate ones
+            page_text = ' '.join(page_text.split())
+            text.append(page_text)
+            
         return "\n\n".join(text)
     except Exception as e:
         logger.error(f"Error processing PDF: {str(e)}")
         raise HTTPException(status_code=400, detail=f"Error processing PDF: {str(e)}")
+    
 @app.post("/upload/")
 async def upload_document(file: UploadFile = File(...)):
-    """Upload a PDF document and store it with a unique asset ID."""
+    """Upload and process a document with memory-efficient processing."""
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     try:
         asset_id = str(uuid.uuid4())
-        file_path = os.path.join(UPLOAD_DIR, f"{asset_id}.pdf")
+        file_path = os.path.join("uploads", f"{asset_id}.pdf")
+        
+        # Save file
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
 
+
+
+
+        # Extract text (using your existing extract_text_from_pdf function)
         text_content = extract_text_from_pdf(file_path)
-        word_count = len(nltk.word_tokenize(text_content))  # Calculate word count
-        page_count = text_content.count("\f") + 1  # Count form feed characters for pages
-
-        docs = preprocessor.process([
-            {
-                "content": text_content,
-                "meta": {
-                    "asset_id": asset_id,
-                    "name": file.filename,
-                    "word_count": word_count,
-                    "page_count": page_count
-                }
-            }
-        ])
-        document_store.write_documents(docs)
-
+        
+        # Process document with progress logging
+        logger.info("Starting document processing...")
+        vector_store = process_document(text_content, asset_id)
+        vector_stores[asset_id] = vector_store
+        
+        # Store document info
         documents[asset_id] = {
             "file_path": file_path,
-            "original_filename": file.filename,
-            "word_count": word_count,
-            "page_count": page_count
+            "original_filename": file.filename
         }
 
-        return {"asset_id": asset_id, "message": "Document uploaded successfully"}
+        return {"asset_id": asset_id, "message": "Document processed successfully"}
     except Exception as e:
-        logger.error(f"Error uploading document: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
-
-@app.post("/search/{asset_id}")
-async def search_document(asset_id: str, question: QuestionRequest):
-    """Search for an answer in a specific document."""
-    if asset_id not in documents:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    # Check if the question relates to metadata
-    if "length" in question.question.lower():
-        doc_info = documents[asset_id]
-        return {
-            "answer": f"The document has {doc_info['word_count']} words and {doc_info['page_count']} pages.",
-            "confidence": 1.0,
-            "question": question.question
-        }
-
-    try:
-        candidate_docs = retriever.retrieve(
-            query=question.question,
-            filters={"asset_id": asset_id},
-            top_k=10  # Retrieve more candidates
-        )
-
-        results = reader.predict(
-            query=question.question,
-            documents=candidate_docs,
-            top_k=5  # Return multiple answers
-        )
-
-        if not results["answers"]:
-            return {
-                "answer": "No answer found",
-                "confidence": 0,
-                "question": question.question
-            }
-
-        answer = max(results["answers"], key=lambda x: x.score)
-        if answer.score < 0.6:  # Confidence threshold
-            return {
-                "answer": "No confident answer found",
-                "confidence": round(answer.score, 4),
-                "question": question.question
-            }
-
-        return {
-            "answer": answer.answer,
-            "confidence": round(answer.score, 4),
-            "question": question.question,
-            "context": answer.context,
-            "document_name": candidate_docs[0].meta.get("name", "Unknown")
-        }
-
-    except Exception as e:
-        logger.error(f"Error searching document: {str(e)}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred. Please try again later.")
-
-@app.post("/feedback/")
-async def submit_feedback(feedback: FeedbackRequest):
-    """Collect user feedback."""
-    try:
-        # For now, simply log feedback
-        logger.info(f"Feedback received: {feedback}")
-        return {"message": "Thank you for your feedback!"}
-    except Exception as e:
-        logger.error(f"Error submitting feedback: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error submitting feedback")
-
-@app.delete("/documents/{asset_id}")
-async def delete_document(asset_id: str):
-    """Delete a document by its asset ID."""
-    if asset_id not in documents:
+        logger.error(f"Error processing document: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/ask/{asset_id}", response_model=SearchResponse)
+async def ask_question(asset_id: str, request: QuestionRequest):
+    """Enhanced question answering with better summarization."""
+    if asset_id not in vector_stores:
         raise HTTPException(status_code=404, detail="Document not found")
 
     try:
-        os.remove(documents[asset_id]["file_path"])
-        document_store.delete_documents(filters={"asset_id": asset_id})
-        del documents[asset_id]
-        return {"message": "Document deleted successfully"}
+        # For summarization requests, increase the number of chunks
+        k = request.k
+        if "summarize" in request.question.lower() or "summarise" in request.question.lower():
+            k = min(k + 5, 8)  # Get more context for summarization
+        
+        # Retrieve relevant chunks
+        vector_store = vector_stores[asset_id]
+        relevant_docs = vector_store.similarity_search(
+            request.question,
+            k=k
+        )
+        
+        # Combine relevant chunks into context
+        context = "\n".join([doc.page_content for doc in relevant_docs])
+        
+        # Adjust prompt based on question type
+        if "summarize" in request.question.lower() or "summarise" in request.question.lower():
+            question = "Please provide a concise summary of the following text: "
+        else:
+            question = request.question
+            
+        # Get answer using QA pipeline
+        qa_result = qa_pipeline(
+            question=question,
+            context=context,
+            max_answer_len=150 if "summarize" in request.question.lower() else 50
+        )
+        
+        return SearchResponse(
+            answer=qa_result["answer"],
+            relevant_chunks=[doc.page_content for doc in relevant_docs],
+            confidence=qa_result["score"]
+        )
+
     except Exception as e:
-        logger.error(f"Error deleting document: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
+        logger.error(f"Error processing question: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
