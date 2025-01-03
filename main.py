@@ -1,4 +1,8 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from starlette.responses import JSONResponse
 from pydantic import BaseModel
 import uuid
 import os
@@ -10,16 +14,54 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains.summarize import load_summarize_chain
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import Ollama
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from langchain.schema import Document
 import torch
-import nltk
 from tqdm import tqdm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Advanced Document QA System")
+# Initialize FastAPI with proxy prefix
+app = FastAPI(
+    title="Advanced Document QA System",
+    docs_url=None,
+    openapi_url=None,
+    root_path="/proxy/8000"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Custom OpenAPI endpoint
+@app.get("/openapi.json")
+async def get_open_api_endpoint():
+    openapi_schema = get_openapi(
+        title="Advanced Document QA System",
+        version="1.0.0",
+        description="API for document processing and QA",
+        routes=app.routes,
+    )
+    # Update servers to include proxy path
+    openapi_schema["servers"] = [
+        {"url": "/proxy/8000"}
+    ]
+    return JSONResponse(openapi_schema)
+
+# Custom docs endpoint
+@app.get("/docs")
+async def get_documentation():
+    return get_swagger_ui_html(
+        openapi_url="./openapi.json",
+        title="API Documentation",
+        swagger_favicon_url=""
+    )
 
 # Initialize models and components
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -108,16 +150,11 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 def clean_text(text: str) -> str:
     """Clean and normalize text."""
-    # Replace multiple spaces with single space
     text = ' '.join(text.split())
-    # Add space after periods if missing
     text = text.replace(".",". ")
-    # Add space after commas if missing
     text = text.replace(",",", ")
-    # Remove non-breaking space characters
     text = text.replace("\xa0", " ")
     return text
-from langchain.schema import Document
 
 def process_document(text: str, asset_id: str) -> FAISS:
     """Process document text into embeddings and store in FAISS."""
@@ -149,16 +186,11 @@ def process_document(text: str, asset_id: str) -> FAISS:
         )
         
         return vector_store
-    
-    except Exception as e:
-        logger.error(f"Error in document processing: {str(e)}")
-        raise
-    
     except Exception as e:
         logger.error(f"Error in document processing: {str(e)}")
         raise
 
-@app.post("/upload/")
+@app.post("/upload/", include_in_schema=True)
 async def upload_document(file: UploadFile = File(...)):
     """Upload and process a document."""
     if not file.filename.lower().endswith('.pdf'):
@@ -191,7 +223,7 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error processing document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.post("/ask/{asset_id}", response_model=SearchResponse)
 async def ask_question(asset_id: str, request: QuestionRequest):
     """Answer questions about the document."""
@@ -225,11 +257,10 @@ async def ask_question(asset_id: str, request: QuestionRequest):
             relevant_chunks=[doc.page_content for doc in docs],
             confidence=1 - min(scores) if scores else 0.95
         )
-
     except Exception as e:
         logger.error(f"Error processing question: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 @app.delete("/documents/{asset_id}")
 async def delete_document(asset_id: str):
     """Delete a document and its associated data."""
