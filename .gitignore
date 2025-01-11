@@ -7,6 +7,7 @@ __pycache__/
 # Virtual environment
 venv/
 .venv/
+myenv
 
 # Uploaded files
 uploads/
@@ -76,3 +77,12 @@ output/
 # Cached index or temporary files
 index_cache/
 *.tmp
+
+
+uvicorn main.py:application --host 0.0.0.0 --port 8000
+
+curl https://ollama.ai/install.sh | sh
+
+
+ollama serve
+Ollama pull mistral

@@ -1,4 +1,3 @@
-#streamlit run app.py
 import streamlit as st
 import requests
 import base64
@@ -57,6 +56,9 @@ with col2:
         question = st.text_input("", placeholder="Ask me a question about the PDF...", key="question_input")
         if st.button("Send"):
             if question:
+                # Clear previous messages after each new Q&A interaction
+                st.session_state.messages.clear()
+
                 st.session_state.messages.append({"role": "user", "content": question})
                 with st.spinner("Getting answer..."):
                     response = requests.post(
@@ -70,13 +72,13 @@ with col2:
                             "content": data['answer'],
                             "chunks": data['relevant_chunks']
                         })
-                        st.rerun()
+                        st.rerun()  # This will clear the session state and rerun the app
 
-    for i in range(0, len(st.session_state.messages), 2):
-        if i+1 < len(st.session_state.messages):
-            st.markdown(f"""
-                <div class="qa-pair">
-                    <div class="question">Q: {st.session_state.messages[i]['content']}</div>
-                    <div class="answer">A: {st.session_state.messages[i+1]['content']}</div>
-                </div>
-            """, unsafe_allow_html=True)
+    # Display the latest question and answer
+    if len(st.session_state.messages) > 0:
+        st.markdown(f"""
+            <div class="qa-pair">
+                <div class="question">Q: {st.session_state.messages[-2]['content']}</div>
+                <div class="answer">A: {st.session_state.messages[-1]['content']}</div>
+            </div>
+        """, unsafe_allow_html=True)

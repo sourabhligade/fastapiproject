@@ -11,3 +11,4 @@ uvicorn
 python-magic
 pypdf
 nltk
+streamlit
