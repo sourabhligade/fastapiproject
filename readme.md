@@ -1,5 +1,9 @@
 # Document-Based RAG Chatbot
 
+## Watch the Demo
+
+[![Watch the video](https://img.youtube.com/vi/GcZbY1s0Ddw/0.jpg)](https://www.youtube.com/watch?v=GcZbY1s0Ddw)
+
 ## Project Overview
 **Document-Based RAG Chatbot** is a state-of-the-art natural language processing (NLP) system designed for querying and retrieving relevant information from large PDF documents. Leveraging advanced models like Mistral7B, FAISS, and Langchain, the chatbot provides fast, context-aware answers to user queries. This system is built to handle documents up to 300 pages, providing seamless integration with HuggingFace Transformers for high-quality responses.
 
