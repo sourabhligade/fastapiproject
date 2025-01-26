@@ -2,10 +2,8 @@ import streamlit as st
 import requests
 import base64
 
-# Set the page layout and title
 st.set_page_config(layout="wide", page_title="Chat with Any PDF")
 
-# Custom styling with improved fonts and responsive design
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -150,7 +148,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Header
 st.markdown('<div class="header-container"><div class="logo">📚</div><div class="title">Chat with Any PDF</div></div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Transform your PDF reading experience with AI-powered conversations. Get instant answers, summaries, and insights from your documents.</div>', unsafe_allow_html=True)
 
@@ -161,7 +158,6 @@ def display_pdf(file):
     base64_pdf = base64.b64encode(file.read()).decode('utf-8')
     return f'<div class="pdf-container"><iframe src="data:application/pdf;base64,{base64_pdf}"></iframe></div>'
 
-# Main content
 col1, col2 = st.columns([0.6, 0.4])
 
 with col1:
@@ -174,7 +170,6 @@ with col1:
                 response = requests.post('http://localhost:8000/upload/', files={'file': uploaded_file})
                 if response.ok:
                     st.session_state.asset_id = response.json()['asset_id']
-                    # Simulate predefined questions generation (you can make this dynamic by analyzing the PDF)
                     predefined_questions = [
                         "What is the summary of the document?",
                         "What are the key points in the document?",
@@ -204,7 +199,6 @@ with col2:
                         })
                         st.rerun()
 
-        # Display questions without the "Predefined Questions" header, make text purple and sleek
         if 'predefined_questions' in st.session_state:
             for q in st.session_state.predefined_questions:
                 if st.button(q, key=q):
@@ -223,10 +217,9 @@ with col2:
                             })
                             st.rerun()
 
-    # Display chat history
     if st.session_state.messages:
         st.markdown("### Conversation")
-        for msg in st.session_state.messages[-2:]:  # Show last Q&A pair
+        for msg in st.session_state.messages[-2:]:  
             if msg["role"] == "user":
                 st.markdown(f"""
                     <div class="qa-pair">
@@ -245,7 +238,6 @@ with col2:
                 """, unsafe_allow_html=True)
 
 if uploaded_file: 
-    # Footer
     st.markdown("""
     <div class="footer">
         Powered with AI 💡 | Built using Streamlit 💻 | Chat with any PDF 📝

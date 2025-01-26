@@ -18,11 +18,9 @@ from langchain.schema import Document
 import torch
 from tqdm import tqdm
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI with proxy prefix
 app = FastAPI(
     title="Advanced Document QA System",
     docs_url=None,
@@ -30,7 +28,6 @@ app = FastAPI(
     root_path="/proxy/8000"
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,7 +36,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Custom OpenAPI endpoint
 @app.get("/openapi.json")
 async def get_open_api_endpoint():
     openapi_schema = get_openapi(
@@ -48,13 +44,11 @@ async def get_open_api_endpoint():
         description="API for document processing and QA",
         routes=app.routes,
     )
-    # Update servers to include proxy path
     openapi_schema["servers"] = [
         {"url": "/proxy/8000"}
     ]
     return JSONResponse(openapi_schema)
 
-# Custom docs endpoint
 @app.get("/docs")
 async def get_documentation():
     return get_swagger_ui_html(
@@ -63,21 +57,17 @@ async def get_documentation():
         swagger_favicon_url=""
     )
 
-# Initialize models and components
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EMBEDDING_MODEL = "BAAI/bge-large-en-v1.5"
 
-# Initialize embeddings
 embeddings = HuggingFaceEmbeddings(
     model_name=EMBEDDING_MODEL,
     model_kwargs={'device': DEVICE},
     encode_kwargs={'normalize_embeddings': True}
 )
 
-# Initialize LLM (using Ollama for easier setup)
 llm = Ollama(model="mistral")
 
-# Create prompt templates
 qa_template = """Answer the following question based on the provided context. If the answer cannot be found in the context, say "I cannot find the answer in the provided context."
 
 Context:
@@ -98,7 +88,7 @@ Summary:"""
 QA_PROMPT = PromptTemplate(template=qa_template, input_variables=["context", "question"])
 SUMMARY_PROMPT = PromptTemplate(template=summary_template, input_variables=["text"])
 
-# Initialize summarization chain
+
 summary_chain = load_summarize_chain(
     llm,
     chain_type="map_reduce",
@@ -106,7 +96,7 @@ summary_chain = load_summarize_chain(
     combine_prompt=SUMMARY_PROMPT
 )
 
-# Initialize text splitter
+
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=500,
     chunk_overlap=50,
@@ -114,11 +104,9 @@ text_splitter = RecursiveCharacterTextSplitter(
     separators=["\n\n", "\n", ". ", ", ", " ", ""]
 )
 
-# Storage
 documents: Dict[str, Dict] = {}
 vector_stores: Dict[str, FAISS] = {}
 
-# Models
 class QuestionRequest(BaseModel):
     question: str
     k: int = 6
@@ -159,19 +147,14 @@ def clean_text(text: str) -> str:
 def process_document(text: str, asset_id: str) -> FAISS:
     """Process document text into embeddings and store in FAISS."""
     try:
-        # Clean the text
         cleaned_text = clean_text(text)
         
-        # Split text into chunks
         chunks = text_splitter.split_text(cleaned_text)
         
-        # Clean each chunk
         chunks = [clean_text(chunk) for chunk in chunks]
         
-        # Remove empty or very short chunks
         chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50]
         
-        # Create Document objects
         documents = [
             Document(
                 page_content=chunk,
@@ -179,7 +162,6 @@ def process_document(text: str, asset_id: str) -> FAISS:
             ) for i, chunk in enumerate(chunks)
         ]
         
-        # Create vector store
         vector_store = FAISS.from_documents(
             documents,
             embeddings
@@ -197,23 +179,19 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     try:
-        # Create uploads directory if it doesn't exist
         os.makedirs("uploads", exist_ok=True)
         
         asset_id = str(uuid.uuid4())
         file_path = os.path.join("uploads", f"{asset_id}.pdf")
         
-        # Save file
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
 
-        # Extract and process text
         text_content = extract_text_from_pdf(file_path)
         vector_store = process_document(text_content, asset_id)
         vector_stores[asset_id] = vector_store
         
-        # Store document info
         documents[asset_id] = {
             "file_path": file_path,
             "original_filename": file.filename
@@ -237,11 +215,9 @@ async def ask_question(asset_id: str, request: QuestionRequest):
             k=request.k
         )
         
-        # Correctly extract documents and scores
         docs, scores = zip(*search_results)
         context = "\n".join(doc.page_content for doc in docs)
         
-        # Handle summary request
         is_summary_request = "summarize" in request.question.lower() or "summarise" in request.question.lower()
         
         if is_summary_request:
@@ -268,10 +244,8 @@ async def delete_document(asset_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
 
     try:
-        # Delete file
         os.remove(documents[asset_id]["file_path"])
         
-        # Delete from storage
         del documents[asset_id]
         del vector_stores[asset_id]
         
